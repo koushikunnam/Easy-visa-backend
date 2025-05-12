@@ -8,6 +8,15 @@ app.use(cors());
 app.use(express.json());
 
 const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
+
+// Firebase Admin Setup
+const admin = require("firebase-admin");
+const serviceAccount = require("./firebase-service-account.json"); // 🔑 Replace with your file
+
+admin.initializeApp({
+  credential: admin.credential.cert(serviceAccount),
+});
+
 const uri = `mongodb+srv://mrrakeshk1704:Rakeshk2003@cluster0.h5n5y.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0`;
 
 const client = new MongoClient(uri, {
@@ -22,129 +31,129 @@ const database = client.db("EasyVisa");
 const userCollection = database.collection("users");
 const visaCollection = database.collection("visas");
 const applicationCollection = database.collection("applications");
+
+// 🔐 Middleware: Verify Firebase Token
+const verifyToken = async (req, res, next) => {
+  const authHeader = req.headers.authorization;
+  if (!authHeader?.startsWith("Bearer ")) {
+    return res.status(401).send({ message: "Unauthorized" });
+  }
+
+  const token = authHeader.split(" ")[1];
+  try {
+    const decoded = await admin.auth().verifyIdToken(token);
+    req.decodedEmail = decoded.email;
+    next();
+  } catch (error) {
+    res.status(401).send({ message: "Unauthorized" });
+  }
+};
+
+// 🔐 Middleware: Check Admin
+const verifyAdmin = async (req, res, next) => {
+  const email = req.decodedEmail;
+  const user = await userCollection.findOne({ email });
+  if (user?.role === "admin") {
+    next();
+  } else {
+    res.status(403).send({ message: "Forbidden: Admins only" });
+  }
+};
+
 async function run() {
   try {
-    // Routes
     app.get("/", (req, res) => {
-      res.send(`
-    <h1>Welcome to the EasyVisa API!</h1>
-    <p>Use the following routes to interact with the EasyVisa API:</p>
-
-    <h2>User Management</h2>
-    <ul>
-      <li><strong>POST /Users</strong>: Create a new user</li>
-      <li><strong>GET /Users</strong>: Get all users</li>
-    </ul>
-
-    <h2>Visa Management</h2>
-    <ul>
-      <li><strong>POST /Visa</strong>: Add a new visa</li>
-      <li><strong>GET /Visa</strong>: Get all visas</li>
-      <li><strong>GET /Visa/:id</strong>: Get visa details by ID</li>
-      <li><strong>PUT /Visa/:id</strong>: Update visa details</li>
-      <li><strong>DELETE /Visa/:id</strong>: Delete a visa by ID</li>
-    </ul>
-
-    <h2>Application Management</h2>
-    <ul>
-      <li><strong>POST /Applications</strong>: Submit a new application</li>
-      <li><strong>GET /Applications</strong>: Get all applications</li>
-      <li><strong>GET /Applications/:id</strong>: Get application details by ID</li>
-      <li><strong>DELETE /Applications/:id</strong>: Cancel an application</li>
-    </ul>
-
-    <h2>Errors</h2>
-    <ul>
-      <li><strong>400 Bad Request</strong>: Missing or invalid data</li>
-      <li><strong>404 Not Found</strong>: Resource not found</li>
-      <li><strong>500 Internal Server Error</strong>: Server issue</li>
-    </ul>
-  `);
+      res.send("🌍 Welcome to EasyVisa API");
     });
 
-    // Users
+    // USERS
     app.post("/Users", async (req, res) => {
       const user = req.body;
       const result = await userCollection.insertOne(user);
       res.send(result);
     });
+
     app.get("/Users", async (req, res) => {
       const cursor = userCollection.find();
       const users = await cursor.toArray();
       res.send(users);
     });
-    // Visas
-    app.post("/Visa", async (req, res) => {
+
+    // ✳️ VISA ROUTES
+
+    // ✅ Admin-only: Add Visa
+    app.post("/Visa", verifyToken, verifyAdmin, async (req, res) => {
       const visa = req.body;
       const result = await visaCollection.insertOne(visa);
       res.send(result);
     });
+
+    // ✅ Anyone can view visas
     app.get("/Visa", async (req, res) => {
-      const cursor = visaCollection.find();
-      const visas = await cursor.toArray();
+      const visas = await visaCollection.find().toArray();
       res.send(visas);
     });
+
     app.get("/Visa/:id", async (req, res) => {
       const id = req.params.id;
-      const query = { _id: new ObjectId(id) };
-      const visa = await visaCollection.findOne(query);
+      const visa = await visaCollection.findOne({ _id: new ObjectId(id) });
       res.send(visa);
     });
+
     app.put("/Visa/:id", async (req, res) => {
       const id = req.params.id;
-      const query = { _id: new ObjectId(id) };
-      const visa = req.body;
-      console.log(visa);
-      const update = { $set: visa };
-      const result = await visaCollection.updateOne(query, update);
+      const update = { $set: req.body };
+      const result = await visaCollection.updateOne({ _id: new ObjectId(id) }, update);
       res.send(result);
     });
-    app.delete("/Visa/:id", async (req, res) => {
+
+    // ✅ Admin-only: Delete Visa
+    app.delete("/Visa/:id", verifyToken, verifyAdmin, async (req, res) => {
       const id = req.params.id;
-      const query = { _id: new ObjectId(id) };
-      const result = await visaCollection.deleteOne(query);
+      const result = await visaCollection.deleteOne({ _id: new ObjectId(id) });
       res.send(result);
     });
-    // Applications
+
+    // 📨 APPLICATION ROUTES
     app.post("/Applications", async (req, res) => {
       const application = req.body;
-      const existingApplication = await applicationCollection.findOne({
+      const exists = await applicationCollection.findOne({
         visaId: application.visaId,
         email: application.email,
       });
-      // If an application already exists, return an error
-      if (existingApplication) {
-        console.log("Application already exists.");
+
+      if (exists) {
         return res.status(400).send({ message: "Application already exists." });
       }
+
       const result = await applicationCollection.insertOne(application);
       res.send(result);
     });
+
     app.get("/Applications", async (req, res) => {
-      const cursor = applicationCollection.find();
-      const applications = await cursor.toArray();
+      const applications = await applicationCollection.find().toArray();
       res.send(applications);
     });
+
     app.get("/Applications/:id", async (req, res) => {
       const id = req.params.id;
-      const query = { _id: new ObjectId(id) };
-      const application = await applicationCollection.findOne(query);
-      res.send(application);
-    });
-    app.delete("/Applications/:id", async (req, res) => {
-      const id = req.params.id;
-      const query = { _id: new ObjectId(id) };
-      const result = await applicationCollection.deleteOne(query);
+      const result = await applicationCollection.findOne({ _id: new ObjectId(id) });
       res.send(result);
     });
+
+    app.delete("/Applications/:id", async (req, res) => {
+      const id = req.params.id;
+      const result = await applicationCollection.deleteOne({ _id: new ObjectId(id) });
+      res.send(result);
+    });
+
   } finally {
-    // Ensures that the client will close when you finish/error
     // await client.close();
   }
 }
 run().catch(console.dir);
 
-// start server
+// Start Server
 app.listen(port, () => {
-  console.log(`Server is running on port ${port}`);
+  console.log(`🚀 Server running on port ${port}`);
 });
